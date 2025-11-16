@@ -205,3 +205,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Google Cloud credentials
+*.json
+gcp-keys/
+keys/
+
+# Local data
+data/
+*.parquet
+*.csv
+*.gz
+*.txt
+
+# PySpark temp logs
+derby.log
+metastore_db/
+spark-warehouse/
