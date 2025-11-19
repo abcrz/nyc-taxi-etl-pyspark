@@ -19,7 +19,7 @@ Ejemplo de entrada:
 from flask import Flask, request, jsonify
 from pyspark.sql import Row
 from pyspark.sql import SparkSession
-from model_loader import load_spark_model
+from ..models.model_loader import load_spark_model
 
 # Cargamos modelo de Spark ML al iniciar la API
 spark, model = load_spark_model()
