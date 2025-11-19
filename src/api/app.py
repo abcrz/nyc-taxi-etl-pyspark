@@ -1,66 +1,40 @@
-"""
-app.py
-------
-API REST en Flask para exponer el modelo de ML entrenado en PySpark.
-
-Endpoint:
-    POST /predict
-
-Ejemplo de entrada:
-{
-    "trip_distance": 3.2,
-    "trip_duration_min": 14.5,
-    "passenger_count": 1,
-    "pickup_hour": 18,
-    "payment_type": 1
-}
-"""
-
 from flask import Flask, request, jsonify
 from pyspark.sql import Row
-from pyspark.sql import SparkSession
-from model_loader import load_spark_model
-
-# Cargamos modelo de Spark ML al iniciar la API
-spark, model = load_spark_model()
+from ..models.model_loader import load_spark_model
 
 app = Flask(__name__)
+
+# Cargar Spark + modelo una sola vez
+spark, model = load_spark_model()
+
+REQUIRED_FIELDS = {
+    "trip_distance": float,
+    "trip_duration_min": float,
+    "passenger_count": int,
+    "pickup_hour": int,
+    "payment_type": int
+}
 
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """
-    Realiza predicción de tarifa usando el modelo entrenado.
-    """
-
     try:
         data = request.get_json()
 
-        required_fields = [
-            "trip_distance",
-            "trip_duration_min",
-            "passenger_count",
-            "pickup_hour",
-            "payment_type"
-        ]
+        # Validación
+        for field, dtype in REQUIRED_FIELDS.items():
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
+            try:
+                data[field] = dtype(data[field])
+            except:
+                return jsonify({"error": f"Invalid type for field: {field}"}), 400
 
-        for f in required_fields:
-            if f not in data:
-                return jsonify({"error": f"Missing field: {f}"}), 400
+        # DataFrame Spark
+        df = spark.createDataFrame([Row(**data)])
 
-        # Convertimos dict → Row (Spark)
-        input_row = Row(
-            trip_distance=float(data["trip_distance"]),
-            trip_duration_min=float(data["trip_duration_min"]),
-            passenger_count=int(data["passenger_count"]),
-            pickup_hour=int(data["pickup_hour"]),
-            payment_type=int(data["payment_type"])
-        )
-
-        df = spark.createDataFrame([input_row])
-
-        # Generar predicción
-        pred = model.transform(df).collect()[0]["prediction"]
+        # Predicción
+        pred = model.transform(df).first().prediction
 
         return jsonify({
             "prediction_total_amount": round(float(pred), 2)
@@ -72,7 +46,7 @@ def predict():
 
 @app.route("/", methods=["GET"])
 def home():
-    return {"status": "API NYC Taxi ML Model OK"}
+    return {"status": "NYC Taxi API Model Loaded OK"}
 
 
 if __name__ == "__main__":
