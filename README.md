@@ -1,7 +1,7 @@
-# NYC Taxi ETL con PySpark & Google Cloud Dataproc
+# NYC Taxi ETL con PySpark, Google Cloud Dataproc y WebApp de Predicción
 
 Proyecto de analítica y machine learning para el dataset de taxis de Nueva York.  
-Incluye un **pipeline ETL en PySpark sobre Dataproc**, almacenamiento en **Google Cloud Storage (GCS)** y una **web app Flask** para estimar tarifas de viaje en tiempo casi real.
+Incluye un **pipeline ETL en PySpark sobre Dataproc**, almacenamiento en **Google Cloud Storage (GCS)**, un **módulo de entrenamiento de modelo** y una **API + web app Flask** para estimar tarifas de viaje en tiempo casi real.
 
 > Bootcamp Python para Ciencia de Datos – Módulo 4: Big Data, MLOps
 
@@ -12,10 +12,12 @@ Incluye un **pipeline ETL en PySpark sobre Dataproc**, almacenamiento en **Googl
 El objetivo es construir de punta a punta un flujo típico de **Data Engineering + ML**:
 
 1. Ingerir datos del dataset público de NYC Taxi.
-2. Procesarlos con PySpark en un **cluster Dataproc**.
+2. Procesarlos con PySpark en un **cluster Dataproc** y/o Spark local.
 3. Generar capas **raw → curated → agg** en un bucket de **GCS**.
 4. Entrenar un modelo de predicción de tarifa (Gradient Boosted Trees).
-5. Publicar el modelo como servicio con una **API web** y una interfaz sencilla para el usuario.
+5. Publicar el modelo como servicio mediante:
+   - Una **API REST** (`/predict`) para consumo programático.
+   - Una **web app Flask** con interfaz HTML interactiva para el usuario final.
 
 ---
 
@@ -25,7 +27,7 @@ Las ciudades generan millones de registros de viajes de taxi.
 Sin una buena analítica:
 
 - Es difícil **estimar tarifas** antes del viaje.
-- No se aprovechan patrones espaciales/temporales (zona, hora, distancia).
+- No se aprovechan patrones espaciales/temporales (zona, hora, distancia, horario).
 - Se pierden oportunidades de **optimizar demanda, rutas y costos**.
 
 ---
@@ -37,14 +39,19 @@ Este proyecto implementa:
 - Un **pipeline ETL en PySpark** que limpia, filtra y transforma los datos históricos.
 - Un **modelo de ML** que predice la tarifa del viaje a partir de features como:
   - Distancia del trayecto  
-  - Hora del viaje
-  - Forma de pago
+  - Duración estimada del viaje  
+  - Hora del viaje  
+  - Cantidad de pasajeros  
+  - Tipo de pago
 - Un **bucket de GCS** que organiza todo el ciclo de vida del dato:
   - `raw/`, `curated/`, `agg/`, `models/`.
+- Una **API REST en Flask** que:
+  - Expone un endpoint JSON `/predict` para obtener la tarifa estimada.
 - Una **web app Flask** que:
-  - Expone un formulario para capturar los datos del viaje.
-  - Consulta el modelo entrenado en GCS.
-  - Devuelve una **tarifa estimada** y un pequeño resumen visual.
+  - Muestra un formulario para capturar los datos del viaje.
+  - Calcula una duración estimada según la distancia.
+  - Consulta el modelo entrenado (cargado desde GCS).
+  - Devuelve una **tarifa estimada** y un resumen visual (chips, gauge, mapa).
 
 ---
 
@@ -61,35 +68,53 @@ Este proyecto implementa:
              └─ models/
                      ▲
                      │
-        PySpark ETL en Dataproc (cluster nyc-taxi-etl-pyspark)
+        PySpark ETL en Dataproc / Spark local
                      │
        ┌─────────────┴─────────────┐
        │                           │
   Limpieza + FE               Entrenamiento modelo
+(main_etl.py / etl.ipynb)    (main_train.py / train_model.ipynb)
                                    │
                                    ▼
                      Modelo GBT guardado en GCS
                                    │
-                                   ▼
-                      Flask Web App (webapp.py)
-                      + model_loader.py
-                                   │
-                                   ▼
-                       UI HTML (templates/index.html)
+                     ┌─────────────┴─────────────┐
+                     │                           │
+              API REST Flask               Web App Flask
+               (src/api/app.py)          (src/webapp/webapp.py)
+                     │                           │
+                     ▼                           ▼
+         /predict (JSON)               UI HTML (templates/index.html)
+         Integraciones                 Formulario + gauge + mapa
 ```
 
 ---
 
-## Infraestructura en GCP:
+## Infraestructura en GCP
 
-- **Cluster Dataproc:** `nyc-taxi-etl-pyspark` (4 nodos trabajadores, imagen 2.2.70-debian12).
+- **Cluster Dataproc:** `nyc-taxi-etl-pyspark` (1 master + workers, imagen 2.2.70-debian12).
 - **Bucket GCS:** `nyc-taxi-etl` con la jerarquía:
-    - `raw/nyc_taxi/…`
-    - `curated/nyc_taxi/…`
-    - `agg/nyc_taxi/…`
-    - `models/nyc_taxi_fare_gbt_2015_01/metadata/stages.json`
+  - `raw/nyc_taxi/…`
+  - `curated/nyc_taxi/…`
+  - `agg/nyc_taxi/…`
+  - `models/nyc_taxi_fare_gbt_2015_01/…`
 - **Red privada + Cloud NAT** para que el cluster tenga salida a internet sin IP pública.
-- **Acceso desde local** mediante `gcloud` con tunelización de puertos (port-forwarding) para ver la interfaz web.
+- **Acceso desde local** mediante `gcloud` con tunelización de puertos (port-forwarding) para ver la interfaz web o consumir la API desde el navegador/postman.
+
+Ejemplo de túnel para la webapp (puerto 5000 en la VM → 8081 local):
+
+```bash
+gcloud compute ssh nyc-taxi-etl-pyspark-m \
+  --zone=us-central1-f \
+  --project=advance-wavelet-478419-r5 \
+  -- -L 8081:localhost:5000
+```
+
+Luego acceder en el navegador local a:
+
+```text
+http://localhost:8081
+```
 
 ---
 
@@ -98,46 +123,64 @@ Este proyecto implementa:
 ```text
 nyc-taxi-etl-pyspark/
 │
+├─ notebooks/
+│   ├─ etl.ipynb              # Exploración y ejecución manual del ETL
+│   └─ train_model.ipynb      # Entrenamiento del modelo en modo interactivo
+│
 ├─ src/
-│   ├─ main_etl.py           # Pipeline ETL + entrenamiento del modelo en PySpark
-│   ├─ __init__.py
-│   └─ api/
-│       ├─ webapp.py         # Aplicación Flask
-│       ├─ model_loader.py   # Carga del modelo desde GCS y cache en memoria
+│   ├─ pipeline/
+│   │   ├─ main_etl.py        # Pipeline ETL: raw → curated → agg
+│   │   ├─ main_train.py      # Entrenamiento del modelo y guardado en GCS
+│   │   └─ etl_writer.py      # Funciones auxiliares para escritura en GCS
+│   │
+│   ├─ features/
+│   │   └─ transformations.py # Limpieza y feature engineering
+│   │
+│   ├─ gcs/
+│   │   └─ paths.py           # Rutas centralizadas a GCS (raw, curated, agg, models)
+│   │
+│   ├─ utils/
+│   │   └─ spark_builder.py   # Construcción de SparkSession (local/Dataproc)
+│   │
+│   ├─ models/
+│   │   ├─ trainer.py         # Lógica de entrenamiento (GBTRegressor, splits, métricas)
+│   │   └─ model_loader.py    # Carga del modelo desde GCS (Spark ML PipelineModel)
+│   │
+│   ├─ api/
+│   │   └─ app.py             # API REST Flask (endpoint /predict)
+│   │
+│   └─ webapp/
+│       ├─ webapp.py          # Web app Flask con formulario HTML
 │       └─ templates/
-│           └─ index.html    # Interfaz web (formulario + visualizaciones)
+│           └─ index.html     # UI (formulario + chips + gauge + mapa)
 │
 ├─ .gitignore
-└─ README.md                 # Este archivo
+├─ requirements.txt
+└─ README.md                  # Este archivo
 ```
 
 ---
 
 ## Tecnologías utilizadas
 
-- **Lenguajes y librerías**
+### Lenguajes y librerías
 
-  - Python 3.x
+- **Python 3.x**
+- **PySpark** (`pyspark.sql`, `pyspark.ml`)
+- **Flask** (API + webapp)
+- **Jinja2** (templates HTML)
+- **Chart.js** (visualización tipo gauge)
+- **Leaflet** (mapa de NYC)
+- **Pandas / NumPy** (apoyo ligero en notebooks)
 
-  - PySpark (pyspark.sql, pyspark.ml)
+### Google Cloud Platform
 
-  - Flask
+- **Dataproc:** ejecución distribuida de PySpark (ETL y entrenamiento).
+- **Cloud Storage (GCS):** almacenamiento de datos, capas del modelo y artefactos de Spark ML.
+- **VPC + Cloud Router + Cloud NAT:** salida a internet sin exponer directamente nodos del cluster.
+- **gcloud CLI:** envío de jobs a Dataproc y tunelización de puertos para desarrollo remoto.
 
-  - Jinja2 (templates HTML)
-
-  - Pandas / NumPy (apoyo ligero)
-
-- **Google Cloud Platform**
-
-  - Dataproc: ejecución distribuida de PySpark.
-
-  - Cloud Storage (GCS): almacenamiento de datos y modelos.
-
-  - VPC + Cloud Router + Cloud NAT: salida a internet sin exponer el cluster.
-
-  - gcloud CLI: tunelización de puertos.
-
---- 
+---
 
 ## Dataset
 
@@ -146,200 +189,220 @@ Se utilizó el dataset público **Yellow Taxi Trip Records** de la NYC TLC.
 Para este proyecto se trabajó con un subconjunto representativo:
 
 - Mes: **enero 2015**
-- Formato: CSV o Parquet según disponibilidad
+- Formato: CSV (lectura cruda) → Parquet (curated/agg)
 - Volumen aproximado: ~12 millones de registros
 
 ### Variables más relevantes
 
-- `pickup_datetime`, `dropoff_datetime`
+- `tpep_pickup_datetime`, `tpep_dropoff_datetime`
 - `pickup_longitude`, `pickup_latitude`
 - `dropoff_longitude`, `dropoff_latitude`
 - `trip_distance`
 - `passenger_count`
 - `payment_type`
 - `fare_amount` (variable objetivo)
-- `tolls_amount`, `extra`, `mta_tax`, etc.
+- `tolls_amount`, `extra`, `mta_tax`, `improvement_surcharge`, `total_amount`, etc.
 
-Estas variables se procesaron en el pipeline ETL para generar las características que alimentan el modelo.
+Estas variables se procesaron en el pipeline ETL para generar las características que alimentan el modelo de predicción de tarifa.
 
---- 
+---
 
 ## Pipeline ETL en PySpark (`main_etl.py`)
 
 Resumen de pasos principales:
 
-1. **Configuración del SparkSession** con los conectores necesarios para GCS.
+1. **Configuración del SparkSession**  
+   Usando `utils/spark_builder.py`, con las opciones necesarias para leer/escribir en GCS.
 
 2. **Lectura de datos crudos** desde:  
-   `gs://nyc-taxi-etl/raw/nyc_taxi/…`
+   `gs://nyc-taxi-etl/raw/nyc_taxi/yellow_tripdata_2015-01.csv`
 
-3. **Limpieza y validación:**
-    - Eliminación de filas con coordenadas inválidas.
-    - Filtro de tarifas negativas o ridículamente altas.
-    - Filtro de distancias nulas o inconsistentes.
+3. **Limpieza y validación** (en `features/transformations.py`):
+   - Eliminación de filas con coordenadas inválidas.
+   - Filtro de tarifas negativas o ridículamente altas.
+   - Filtro de distancias nulas o inconsistentes.
+   - Consistencia básica entre tiempos de pick-up y drop-off.
 
 4. **Feature Engineering:**
-    - Cálculo de la distancia de viaje (aprox. haversine o similar).
-    - Extracción de variables de tiempo: hora del día, día de la semana, etc.
-    - Codificación de variables categóricas necesarias.
+   - Cálculo de duración del viaje en minutos.
+   - Extracción de variables de tiempo: `pickup_hour`, etc.
+   - Selección de columnas relevantes y casteos de tipos.
 
 5. **Escritura de la capa curated:**
-    - Datos listos para modelado →  
-      `gs://nyc-taxi-etl/curated/nyc_taxi/…`
+   - Datos listos para modelado →  
+     `gs://nyc-taxi-etl/curated/nyc_taxi/yellow_2015_01`
 
-6. **Agregaciones (agg layer):**
-    - Métricas por hora, zona, tipo de tarifa, etc. →  
-      `gs://nyc-taxi-etl/agg/nyc_taxi/…`
+6. **Agregaciones (agg layer)** usando `etl_writer.py`:
+   - Métricas de viajes por hora (`trips_by_hour`), incluyendo:
+     - total de viajes
+     - distancia promedio
+     - monto total promedio
+     - duración promedio
+   - Escritas en:  
+     `gs://nyc-taxi-etl/agg/nyc_taxi/trips_by_hour_2015_01`
 
-7. **Entrenamiento del modelo:**
-    - Uso de **Gradient Boosted Trees Regressor** (`GBTRegressor`).
-    - Pipeline de ML con VectorAssembler + normalización.
-    - Evaluación con RMSE y MAE (impresos en logs).
+---
 
-8. **Persistencia del modelo:**
-    - El mejor modelo y su pipeline se guardan en:  
-      `gs://nyc-taxi-etl/models/nyc_taxi_fare_gbt_2015_01/metadata/stages.json`
-    - Subcarpeta `stages/` con los artefactos de Spark ML.
+## Entrenamiento del modelo (`main_train.py` y `models/trainer.py`)
 
+El entrenamiento está desacoplado del ETL y se ejecuta en un script separado:
+
+1. **Lectura de capa curated** desde:  
+   `gs://nyc-taxi-etl/curated/nyc_taxi/yellow_2015_01`
+
+2. **Muestreo / limit** (para reducir costo de cómputo en pruebas).
+
+3. **Split train/test** (`randomSplit`) para evaluar desempeño.
+
+4. **Pipeline de ML** (`models/trainer.py`):
+   - `VectorAssembler` para features numéricas.
+   - Modelo: **`GBTRegressor`** (Gradient Boosted Trees).
+   - Entrenamiento en el subconjunto train.
+   - Evaluación en test usando:
+     - RMSE (Root Mean Squared Error)
+     - MAE  (Mean Absolute Error)
+
+5. **Persistencia del modelo** en GCS:
+
+   ```text
+   gs://nyc-taxi-etl/models/nyc_taxi_fare_gbt_2015_01/
+   ├─ metadata/
+   │  └─ stages.json
+   └─ stages/
+   ```
+
+6. Los scripts imprimen en log las métricas finales, así como tiempos de:
+   - lectura,
+   - entreno,
+   - escritura del modelo.
 
 ---
 
 ## Carga del modelo y API web
 
-### `model_loader.py`
+### `models/model_loader.py`
 
-Archivo auxiliar pensado para centralizar la lógica de carga de modelos Spark ML desde GCS.  
-En esta versión del proyecto, la carga del modelo se realiza directamente en `webapp.py`, pero `model_loader.py` queda preparado para futuras refactorizaciones.
+Centraliza la lógica de carga del modelo Spark ML desde GCS:
 
+- Crea un `SparkSession` en modo **local** (para evitar dependencia de YARN cuando se ejecuta en una VM o entorno simple).
+- Carga el `PipelineModel` desde `GCS_MODEL_PATH`.
+- Devuelve un tuple `(spark, model)` compartido entre API y webapp.
 
-### `webapp.py`
+Se utiliza tanto en:
 
-El modelo se carga directamente desde GCS:
+- `src/api/app.py`
+- `src/webapp/webapp.py`
 
-```python
-from pyspark.ml import PipelineModel
+### API REST – `src/api/app.py`
 
-MODEL_PATH = "gs://nyc-taxi-etl/models/nyc_taxi_fare_gbt_2015_01"
-model = PipelineModel.load(MODEL_PATH)
+- Monta una API Flask con:
+  - **GET /** → verificación de estado.
+  - **POST `/predict`** → recibe un JSON con:
 
+    ```json
+    {
+      "trip_distance": 3.2,
+      "trip_duration_min": 14.5,
+      "passenger_count": 1,
+      "pickup_hour": 18,
+      "payment_type": 1
+    }
+    ```
+
+  - Construye un `DataFrame` de Spark a partir del JSON.
+  - Aplica el modelo y devuelve un JSON con la tarifa estimada, por ejemplo:
+
+    ```json
+    {
+      "prediction_total_amount": 12.87
+    }
+    ```
+
+- Pensado para ser consumido desde Postman, otras apps, o eventualmente desde un frontend separado.
+
+Ejecución local (en la VM):
+
+```bash
+python3 -m src.api.app
 ```
 
-- Web app con **Flask**.
-- Rutas principales:
-    - **GET /**  
-      Renderiza `templates/index.html` con el formulario para capturar datos del viaje.
-    - **POST /predict_web**  
-      Toma los campos del formulario, construye un DataFrame Spark, llama al modelo y devuelve:
-        - Tarifa estimada.          
-- Está pensada para ejecutarse sobre el cluster / VM y ser consumida desde el navegador mediante un túnel con `gcloud`.
+Luego, con túnel:
 
---- 
-
-## Interfaz web (`templates/index.html`)
-
-La interfaz gráfica fue diseñada para proporcionar una experiencia sencilla y moderna inspirada en la estética de los **yellow cabs** de NYC.
-
-Incluye:
-
-### Formulario de entrada
-El usuario ingresa:
-
-- Distancia del viaje (millas)
-- Cantidad de pasajeros
-- Hora del día (0–23)
-- Tipo de pago (Credit Card, Cash, etc.)
-
-El formulario envía una petición POST a `/predict_web`.
-
-### Visualización de resultados
-
-Una vez procesada la predicción, la UI presenta:
-
-#### 1. Tarifa estimada
-Se muestra en un estilo grande y destacado (`$XX.XX`).
-
-#### 2. Resumen del viaje
-Pequeñas *chips* visuales muestran:
-
-- Distancia ingresada  
-- Número de pasajeros  
-- Hora del día  
-- Duración estimada (calculada en la app)
-
-#### 3. Velocímetro (Gauge) con Chart.js
-Visualización semicircular que representa:
-
-- El valor estimado (arco amarillo)
-- El resto del rango (arco gris)
-
-Implementado con **Chart.js (doughnut chart)** configurado como gauge.
-
-#### 4. Mapa ilustrativo (Leaflet)
-Un mapa interactivo centrado en Manhattan utilizando:
-
-```js
-L.map('map').setView([40.75, -73.98], 11);
+```bash
+gcloud compute ssh nyc-taxi-etl-pyspark-m \
+  --zone=us-central1-f \
+  --project=advance-wavelet-478419-r5 \
+  -- -L 8080:localhost:8080
 ```
-Esto no representa el trayecto real, sino una referencia de zona geográfica típica de operación de taxis amarillos.
 
----  
+Consumir desde la máquina local:
 
-## Infraestructura en Google Cloud
+```bash
+curl -X POST http://localhost:8080/predict \
+  -H "Content-Type: application/json" \
+  -d '{"trip_distance": 3.2, "trip_duration_min": 14.5, "passenger_count": 1, "pickup_hour": 18, "payment_type": 1}'
+```
 
-### 1. Bucket de GCS
+---
 
-Bucket: `nyc-taxi-etl` (región `us-central1`)
+## Web App – `src/webapp/webapp.py` + `templates/index.html`
+
+La webapp ofrece una interfaz amigable para usuarios no técnicos.
+
+### Flujo de la webapp
+
+1. El usuario ingresa:
+   - Distancia del viaje (millas)
+   - Cantidad de pasajeros
+   - Hora del día (0–23)
+   - Tipo de pago
+
+2. La webapp calcula internamente una **duración estimada** a partir de la distancia usando una **velocidad promedio** (`AVG_SPEED_MPH`).
+
+3. Se construye un `Row` de Spark con los campos:
+   - `trip_distance`
+   - `trip_duration_min` (estimada)
+   - `passenger_count`
+   - `pickup_hour`
+   - `payment_type`
+
+4. El modelo predice la tarifa total, y se renderiza nuevamente `index.html` mostrando:
+
+   - Tarifa estimada (`$XX.XX`)
+   - Chips con la info del viaje (distancia, pasajeros, hora, duración)
+   - Un gauge (Chart.js) que posiciona la tarifa en un rango de referencia.
+   - Un mapa (Leaflet) centrado en NYC como contexto visual.
+
+### Ejecución de la webapp
+
+En la VM:
+
+```bash
+python3 -m src.webapp.webapp
+```
+
+Túnel desde la máquina local:
+
+```bash
+gcloud compute ssh nyc-taxi-etl-pyspark-m \
+  --zone=us-central1-f \
+  --project=advance-wavelet-478419-r5 \
+  -- -L 8081:localhost:5000
+```
+
+Navegador local:
 
 ```text
-nyc-taxi-etl/
-├─ raw/
-│  └─ nyc_taxi/…              # Datos crudos
-├─ curated/
-│  └─ nyc_taxi/…              # Datos limpios
-├─ agg/
-│  └─ nyc_taxi/…              # Tablas agregadas para analytics
-└─ models/
-   └─ nyc_taxi_fare_gbt_2015_01/
-      ├─ metadata/stages.json # Configuración del modelo
-      └─ stages/              # Artefactos de Spark ML
+http://localhost:8081
 ```
-
-### 2. Cluster Dataproc
-
- - Nombre: nyc-taxi-etl-pyspark
-
- - Región: us-central1
-
- - Imagen base: 2.2.70-debian12
-
- - Topología: 1 nodo master + 4 workers
-
-### 3. Red y NAT
-
-  - VPC privada sin IP pública directa en los nodos.
-
-  - Cloud NAT configurado para permitir:
-
-      - Descarga de paquetes.
-
-      - Acceso a repositorios.
-
-  - El acceso desde la máquina local se hizo con:
-
-      - gcloud dataproc jobs submit pyspark para correr main_etl.py.
-
-      - Tunelización de puertos para exponer:
-
-          - Spark Web UI (puerto 4040/8088, etc.).
-
-          - Flask web app (webapp.py) mapeada a un puerto local.
 
 ---
 
 ## Roadmap / Trabajo futuro
 
-- Implementar endpoint JSON (`/predict`) para consumo programático.
+- Integrar la webapp para que consuma directamente la API REST `/predict` (frontend → API → modelo).
 - Guardar métricas de entrenamiento en un sistema de tracking (MLflow, BigQuery, etc.).
-- Añadir validaciones más robustas en la web app.
-- Desplegar la API en Cloud Run o GKE.
-- Añadir tests unitarios para las funciones clave del ETL.
+- Añadir validaciones más robustas en la web app (rangos, mensajes de error UX).
+- Desplegar la API y/o la webapp en **Cloud Run** o **GKE** con contenedores Docker.
+- Añadir tests unitarios para las funciones clave del ETL y del trainer.
+- Incorporar nuevas features (ej. clima, día de la semana, ubicación más granular) para mejorar el modelo.
